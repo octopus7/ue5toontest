@@ -1,0 +1,76 @@
+<Window x:Class="CircularRingTimer.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:CircularRingTimer"
+        mc:Ignorable="d"
+        Title="Circular Ring Timer"
+        Width="360"
+        Height="360"
+        AllowsTransparency="True"
+        Background="Transparent"
+        KeyDown="Window_OnKeyDown"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None">
+    <Window.Resources>
+        <LinearGradientBrush x:Key="RingProgressBrush" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Offset="0.0" Color="#FFAED9FF" />
+            <GradientStop Offset="0.5" Color="#FF8DCCFF" />
+            <GradientStop Offset="1.0" Color="#FF6DB8FF" />
+        </LinearGradientBrush>
+    </Window.Resources>
+
+    <Grid MouseLeftButtonDown="HandleDragMove">
+        <Border Width="320"
+                Height="320"
+                Background="#FDFDFD"
+                BorderBrush="#FFDCEAF6"
+                BorderThickness="1"
+                CornerRadius="160"
+                SnapsToDevicePixels="True">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="24"
+                                  Color="#30000000"
+                                  Opacity="0.85"
+                                  ShadowDepth="0" />
+            </Border.Effect>
+
+            <Grid>
+                <Ellipse Margin="20"
+                         Fill="#FFFFFFFF"
+                         Stroke="#FFE4EDF4"
+                         StrokeThickness="1" />
+
+                <local:RingProgressControl Margin="20"
+                                           Progress="{Binding Progress}"
+                                           ProgressBrush="{StaticResource RingProgressBrush}"
+                                           StrokeThickness="18"
+                                           TrackBrush="#FFEAF4FB" />
+
+                <Ellipse Margin="52"
+                         Fill="#FFF9FCFF"
+                         Stroke="#FFE7EEF5"
+                         StrokeThickness="1" />
+
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock HorizontalAlignment="Center"
+                               Width="196"
+                               FontFamily="Consolas"
+                               FontSize="36"
+                               FontWeight="Bold"
+                               Foreground="#FF111111"
+                               TextAlignment="Center"
+                               Text="{Binding RemainingTimeText}" />
+                    <TextBlock Margin="0,4,0,0"
+                               HorizontalAlignment="Center"
+                               FontFamily="Bahnschrift Light"
+                               FontSize="12"
+                               Foreground="#AA4A4A4A"
+                               Text="ESC TO CLOSE" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

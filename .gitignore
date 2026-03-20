@@ -1,0 +1,21 @@
+# .NET / WPF
+.vs/
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+[Bb]in/
+[Oo]bj/
+artifacts/
+TestResults/
+
+# Publish outputs
+publish/
+
+# NuGet packages
+packages/
+*.nupkg
+*.snupkg
