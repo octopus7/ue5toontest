@@ -1,0 +1,27 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "{B3A0C173-4AAF-53FE-9AD0-36B13E208C5F}",
+	"Category": "",
+	"Description": "",
+	"Modules": [
+		{
+			"Name": "tooncodex573",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "tooncodex573Editor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "ModelingToolsEditorMode",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		}
+	]
+}

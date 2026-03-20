@@ -1,0 +1,29 @@
+# Unreal Engine 5 project outputs
+
+# IDE
+.vs/
+*.VC.db
+*.VC.opendb
+*.sln
+*.suo
+*.user
+*.userprefs
+
+# Unreal build products
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# Build logs and caches
+*.uatbuildrecord
+*.tmp
+*.log
+
+# Crash dumps
+*.dmp
+*.mdmp
+
+# OS files
+Thumbs.db
+Desktop.ini
