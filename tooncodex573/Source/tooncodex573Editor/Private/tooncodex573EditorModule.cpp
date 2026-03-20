@@ -17,6 +17,7 @@
 #include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "LevelEditor.h"
 #include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
@@ -584,7 +585,41 @@ private:
 		bAwaitingShaderRecompileCompletion = false;
 		bObservedActiveShaderCompile = false;
 		ShaderRecompileStartSeconds = 0.0;
+		DeleteRingTimerInfoFile();
 		InvalidateControlPanel();
+	}
+
+	void LaunchRingTimerForLastShaderCompile()
+	{
+		const FString RingTimerExePath = ResolveRingTimerExecutablePath();
+		if (RingTimerExePath.IsEmpty())
+		{
+			return;
+		}
+
+		if (LastShaderRecompileDurationSeconds < 1.0)
+		{
+			return;
+		}
+
+		const int64 LastDurationMilliseconds = FMath::Max<int64>(0, FMath::RoundToInt64(LastShaderRecompileDurationSeconds * 1000.0));
+		ActiveRingTimerInfoPath = FPaths::Combine(FPaths::GetPath(RingTimerExePath), TEXT("timerinfo.txt"));
+		if (!FFileHelper::SaveStringToFile(FString::Printf(TEXT("%lld"), LastDurationMilliseconds), *ActiveRingTimerInfoPath))
+		{
+			UE_LOG(LogTooncodex573Editor, Warning, TEXT("Failed to write ring timer info file '%s'."), *ActiveRingTimerInfoPath);
+			ActiveRingTimerInfoPath.Reset();
+			return;
+		}
+
+		FProcHandle ProcHandle = FPlatformProcess::CreateProc(*RingTimerExePath, TEXT(""), true, false, false, nullptr, 0, nullptr, nullptr);
+		if (!ProcHandle.IsValid())
+		{
+			DeleteRingTimerInfoFile();
+			UE_LOG(LogTooncodex573Editor, Warning, TEXT("Failed to launch CircularRingTimer from '%s'."), *RingTimerExePath);
+			return;
+		}
+
+		UE_LOG(LogTooncodex573Editor, Display, TEXT("Launched CircularRingTimer with info file '%s' (%lldms) from '%s'."), *ActiveRingTimerInfoPath, LastDurationMilliseconds, *RingTimerExePath);
 	}
 
 	FText GetRecentShaderCompileText() const
@@ -643,6 +678,7 @@ private:
 		bAwaitingShaderRecompileCompletion = false;
 		bObservedActiveShaderCompile = false;
 		ShaderRecompileStartSeconds = 0.0;
+		DeleteRingTimerInfoFile();
 		InvalidateControlPanel();
 	}
 
@@ -652,6 +688,38 @@ private:
 		{
 			ControlPanelWidget.Pin()->Invalidate(EInvalidateWidgetReason::Paint);
 		}
+	}
+
+	void DeleteRingTimerInfoFile()
+	{
+		if (ActiveRingTimerInfoPath.IsEmpty())
+		{
+			return;
+		}
+
+		IFileManager::Get().Delete(*ActiveRingTimerInfoPath, false, true, true);
+		ActiveRingTimerInfoPath.Reset();
+	}
+
+	FString ResolveRingTimerExecutablePath() const
+	{
+		const FString ParentDirectory = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("..")));
+		const TArray<FString> CandidatePaths =
+		{
+			FPaths::Combine(ParentDirectory, TEXT("CircularRingTimer"), TEXT("bin"), TEXT("Release"), TEXT("net10.0-windows"), TEXT("win-x64"), TEXT("publish"), TEXT("CircularRingTimer.exe")),
+			FPaths::Combine(ParentDirectory, TEXT("CircularRingTimer"), TEXT("bin"), TEXT("Release"), TEXT("net10.0-windows"), TEXT("win-x64"), TEXT("CircularRingTimer.exe")),
+			FPaths::Combine(ParentDirectory, TEXT("CircularRingTimer"), TEXT("bin"), TEXT("Debug"), TEXT("net10.0-windows"), TEXT("CircularRingTimer.exe"))
+		};
+
+		for (const FString& CandidatePath : CandidatePaths)
+		{
+			if (IFileManager::Get().FileExists(*CandidatePath))
+			{
+				return CandidatePath;
+			}
+		}
+
+		return FString();
 	}
 
 	FString ResolveOutputPath(const FString& RequestedPath) const
@@ -713,6 +781,7 @@ private:
 	bool bObservedActiveShaderCompile = false;
 	double ShaderRecompileStartSeconds = 0.0;
 	double LastShaderRecompileDurationSeconds = -1.0;
+	FString ActiveRingTimerInfoPath;
 };
 
 void SToonViewportControlPanel::Construct(const FArguments& InArgs)
@@ -832,6 +901,7 @@ FReply SToonViewportControlPanel::HandleRecompileShaders()
 
 	if (OwnerModule != nullptr)
 	{
+		OwnerModule->LaunchRingTimerForLastShaderCompile();
 		OwnerModule->BeginShaderRecompileTiming();
 	}
 

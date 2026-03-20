@@ -1,5 +1,7 @@
 using System;
 using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Windows;
 
 namespace CircularRingTimer;
@@ -7,28 +9,43 @@ namespace CircularRingTimer;
 public partial class App : Application
 {
     private static readonly TimeSpan DefaultDuration = TimeSpan.FromSeconds(10);
+    private const string TimerInfoFileName = "timerinfo.txt";
 
     private void OnStartup(object sender, StartupEventArgs e)
     {
-        var duration = ResolveDuration(e.Args);
-        var mainWindow = new MainWindow(duration);
+        var startupOptions = ResolveStartupOptions();
+        var mainWindow = new MainWindow(startupOptions.Duration, startupOptions.TimerInfoFilePath);
         MainWindow = mainWindow;
         mainWindow.Show();
     }
 
-    private static TimeSpan ResolveDuration(string[] args)
+    private static StartupOptions ResolveStartupOptions()
     {
-        if (args.Length == 0)
+        var executableDirectory = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
+        var timerInfoFilePath = Path.Combine(executableDirectory, TimerInfoFileName);
+        if (!File.Exists(timerInfoFilePath))
         {
-            return DefaultDuration;
+            return new StartupOptions(DefaultDuration, null);
         }
 
-        if (double.TryParse(args[0], NumberStyles.Number, CultureInfo.InvariantCulture, out var milliseconds) &&
-            milliseconds > 0)
+        try
         {
-            return TimeSpan.FromMilliseconds(milliseconds);
+            var firstLine = File.ReadLines(timerInfoFilePath).FirstOrDefault()?.Trim();
+            if (double.TryParse(firstLine, NumberStyles.Number, CultureInfo.InvariantCulture, out var milliseconds) &&
+                milliseconds > 0)
+            {
+                return new StartupOptions(TimeSpan.FromMilliseconds(milliseconds), timerInfoFilePath);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
 
-        return DefaultDuration;
+        return new StartupOptions(DefaultDuration, timerInfoFilePath);
     }
+
+    private sealed record StartupOptions(TimeSpan Duration, string? TimerInfoFilePath);
 }
