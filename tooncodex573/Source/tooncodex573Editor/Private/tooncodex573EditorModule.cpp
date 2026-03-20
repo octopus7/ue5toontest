@@ -24,6 +24,7 @@
 #include "SLevelViewport.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "ShaderCompiler.h"
 #include "SocketSubsystem.h"
 #include "Sockets.h"
 #include "Styling/AppStyle.h"
@@ -128,6 +129,11 @@ namespace ToonViewportCaptureBridge
 
 		return DefaultPort;
 	}
+
+	static FString ResolveDefaultOutputDirectory()
+	{
+		return FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::EngineDir(), TEXT(".."), TEXT("ViewportCaptures")));
+	}
 }
 
 class FTooncodex573EditorModule;
@@ -144,8 +150,10 @@ public:
 	void Construct(const FArguments& InArgs);
 
 private:
+	FReply HandleRecompileShaders();
 	FReply HandleCaptureBookmarkOne();
 	FReply HandleOpenOutputFolder();
+	FText GetRecentShaderCompileText() const;
 	void SetStatus(const FText& InStatus);
 
 	FTooncodex573EditorModule* OwnerModule = nullptr;
@@ -207,11 +215,13 @@ private:
 
 		if (ListenSocket == nullptr)
 		{
+			UpdateShaderRecompileState();
 			return true;
 		}
 
 		AcceptPendingClients();
 		ServicePendingClients();
+		UpdateShaderRecompileState();
 		return true;
 	}
 
@@ -548,12 +558,100 @@ private:
 
 	TSharedRef<SDockTab> SpawnControlPanelTab(const FSpawnTabArgs& Args)
 	{
+		const TSharedRef<SToonViewportControlPanel> ControlPanel =
+			SNew(SToonViewportControlPanel)
+			.OwnerModule(this);
+
+		ControlPanelWidget = ControlPanel;
+
 		return SAssignNew(ControlPanelTab, SDockTab)
 			.TabRole(ETabRole::NomadTab)
 			[
-				SNew(SToonViewportControlPanel)
-				.OwnerModule(this)
+				ControlPanel
 			];
+	}
+
+	void BeginShaderRecompileTiming()
+	{
+		bAwaitingShaderRecompileCompletion = true;
+		bObservedActiveShaderCompile = (GShaderCompilingManager != nullptr) && GShaderCompilingManager->IsCompiling();
+		ShaderRecompileStartSeconds = FPlatformTime::Seconds();
+		InvalidateControlPanel();
+	}
+
+	void CancelShaderRecompileTiming()
+	{
+		bAwaitingShaderRecompileCompletion = false;
+		bObservedActiveShaderCompile = false;
+		ShaderRecompileStartSeconds = 0.0;
+		InvalidateControlPanel();
+	}
+
+	FText GetRecentShaderCompileText() const
+	{
+		if (bAwaitingShaderRecompileCompletion)
+		{
+			return LOCTEXT("ToonCaptureRecentShaderCompileRunning", "최근 소요시간: 측정 중...");
+		}
+
+		if (LastShaderRecompileDurationSeconds < 0.0)
+		{
+			return LOCTEXT("ToonCaptureRecentShaderCompileNone", "최근 소요시간: 없음");
+		}
+
+		FNumberFormattingOptions SecondsFormat;
+		SecondsFormat.SetMinimumFractionalDigits(1);
+		SecondsFormat.SetMaximumFractionalDigits(1);
+
+		if (LastShaderRecompileDurationSeconds >= 60.0)
+		{
+			const int32 WholeMinutes = FMath::FloorToInt(LastShaderRecompileDurationSeconds / 60.0);
+			const double RemainingSeconds = LastShaderRecompileDurationSeconds - (static_cast<double>(WholeMinutes) * 60.0);
+			return FText::Format(
+				LOCTEXT("ToonCaptureRecentShaderCompileMinutes", "최근 소요시간: {0}분 {1}초"),
+				FText::AsNumber(WholeMinutes),
+				FText::AsNumber(RemainingSeconds, &SecondsFormat));
+		}
+
+		return FText::Format(
+			LOCTEXT("ToonCaptureRecentShaderCompileSeconds", "최근 소요시간: {0}초"),
+			FText::AsNumber(LastShaderRecompileDurationSeconds, &SecondsFormat));
+	}
+
+	void UpdateShaderRecompileState()
+	{
+		if (!bAwaitingShaderRecompileCompletion)
+		{
+			return;
+		}
+
+		const bool bIsCompiling = (GShaderCompilingManager != nullptr) && GShaderCompilingManager->IsCompiling();
+		if (bIsCompiling)
+		{
+			bObservedActiveShaderCompile = true;
+			return;
+		}
+
+		const double NowSeconds = FPlatformTime::Seconds();
+		const bool bTimedOutWaitingForWork = !bObservedActiveShaderCompile && ((NowSeconds - ShaderRecompileStartSeconds) >= 0.25);
+		if (!bObservedActiveShaderCompile && !bTimedOutWaitingForWork)
+		{
+			return;
+		}
+
+		LastShaderRecompileDurationSeconds = FMath::Max(0.0, NowSeconds - ShaderRecompileStartSeconds);
+		bAwaitingShaderRecompileCompletion = false;
+		bObservedActiveShaderCompile = false;
+		ShaderRecompileStartSeconds = 0.0;
+		InvalidateControlPanel();
+	}
+
+	void InvalidateControlPanel() const
+	{
+		if (ControlPanelWidget.IsValid())
+		{
+			ControlPanelWidget.Pin()->Invalidate(EInvalidateWidgetReason::Paint);
+		}
 	}
 
 	FString ResolveOutputPath(const FString& RequestedPath) const
@@ -562,8 +660,7 @@ private:
 		if (OutputPath.IsEmpty())
 		{
 			OutputPath = FPaths::Combine(
-				FPaths::ProjectSavedDir(),
-				TEXT("ViewportCaptures"),
+				ToonViewportCaptureBridge::ResolveDefaultOutputDirectory(),
 				FString::Printf(TEXT("Bookmark1Capture_%s.png"), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")))
 			);
 		}
@@ -610,13 +707,18 @@ private:
 	FTSTicker::FDelegateHandle TickHandle;
 	TArray<ToonViewportCaptureBridge::FPendingClient> PendingClients;
 	TWeakPtr<SDockTab> ControlPanelTab;
+	TWeakPtr<SToonViewportControlPanel> ControlPanelWidget;
 	bool bPendingOpenControlTab = false;
+	bool bAwaitingShaderRecompileCompletion = false;
+	bool bObservedActiveShaderCompile = false;
+	double ShaderRecompileStartSeconds = 0.0;
+	double LastShaderRecompileDurationSeconds = -1.0;
 };
 
 void SToonViewportControlPanel::Construct(const FArguments& InArgs)
 {
 	OwnerModule = InArgs._OwnerModule;
-	OutputDirectory = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("ViewportCaptures")));
+	OutputDirectory = ToonViewportCaptureBridge::ResolveDefaultOutputDirectory();
 
 	ChildSlot
 	[
@@ -645,7 +747,23 @@ void SToonViewportControlPanel::Construct(const FArguments& InArgs)
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SBox)
+					.HeightOverride(36.0f)
+					.MinDesiredWidth(130.0f)
+					[
+						SNew(SButton)
+						.OnClicked(this, &SToonViewportControlPanel::HandleRecompileShaders)
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("ToonCaptureRecompileShadersButton", "Recompile Shaders"))
+						]
+					]
+				]
+				+ SHorizontalBox::Slot()
 				.FillWidth(1.0f)
+				.Padding(8.0f, 0.0f, 0.0f, 0.0f)
 				[
 					SNew(SBox)
 					.HeightOverride(36.0f)
@@ -678,6 +796,14 @@ void SToonViewportControlPanel::Construct(const FArguments& InArgs)
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
+			.Padding(0.0f, 8.0f, 0.0f, 0.0f)
+			[
+				SNew(STextBlock)
+				.AutoWrapText(true)
+				.Text(this, &SToonViewportControlPanel::GetRecentShaderCompileText)
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
 			.Padding(0.0f, 12.0f, 0.0f, 0.0f)
 			[
 				SAssignNew(StatusTextBlock, STextBlock)
@@ -694,6 +820,45 @@ void SToonViewportControlPanel::Construct(const FArguments& InArgs)
 			]
 		]
 	];
+}
+
+FReply SToonViewportControlPanel::HandleRecompileShaders()
+{
+	UWorld* World = nullptr;
+	if (GEditor != nullptr)
+	{
+		World = GEditor->GetEditorWorldContext().World();
+	}
+
+	if (OwnerModule != nullptr)
+	{
+		OwnerModule->BeginShaderRecompileTiming();
+	}
+
+	bool bHandled = false;
+	if (GEditor != nullptr)
+	{
+		bHandled = GEditor->Exec(World, TEXT("RecompileShaders Changed"), *GLog);
+	}
+
+	if (!bHandled && (GEngine != nullptr))
+	{
+		bHandled = GEngine->Exec(World, TEXT("RecompileShaders Changed"), *GLog);
+	}
+
+	if (!bHandled)
+	{
+		if (OwnerModule != nullptr)
+		{
+			OwnerModule->CancelShaderRecompileTiming();
+		}
+
+		SetStatus(LOCTEXT("ToonCaptureRecompileShadersFailed", "Failed to start shader recompilation."));
+		return FReply::Handled();
+	}
+
+	SetStatus(LOCTEXT("ToonCaptureRecompileShadersStarted", "Started shader recompilation for changed shaders."));
+	return FReply::Handled();
 }
 
 FReply SToonViewportControlPanel::HandleCaptureBookmarkOne()
@@ -721,6 +886,16 @@ FReply SToonViewportControlPanel::HandleOpenOutputFolder()
 	IFileManager::Get().MakeDirectory(*OutputDirectory, true);
 	FPlatformProcess::ExploreFolder(*OutputDirectory);
 	return FReply::Handled();
+}
+
+FText SToonViewportControlPanel::GetRecentShaderCompileText() const
+{
+	if (OwnerModule != nullptr)
+	{
+		return OwnerModule->GetRecentShaderCompileText();
+	}
+
+	return LOCTEXT("ToonCaptureRecentShaderCompileUnavailable", "최근 소요시간: 없음");
 }
 
 void SToonViewportControlPanel::SetStatus(const FText& InStatus)
