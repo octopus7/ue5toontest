@@ -32,6 +32,7 @@
 #include "UnrealClient.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/STextComboBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/SBoxPanel.h"
@@ -52,6 +53,9 @@ namespace ToonViewportCaptureBridge
 	static constexpr int32 MaxRequestBytes = 16 * 1024;
 	static constexpr double ClientTimeoutSeconds = 5.0;
 	static const FName ControlPanelTabId(TEXT("ToonViewportControlPanel"));
+	static constexpr TCHAR ShaderCompileStartActionTimer[] = TEXT("Timer");
+	static constexpr TCHAR ShaderCompileStartActionCompileTimeHistory[] = TEXT("Compile Time History");
+	static constexpr TCHAR ShaderCompileStartActionDoNothing[] = TEXT("Do Nothing");
 
 	struct FPendingClient
 	{
@@ -153,11 +157,14 @@ public:
 private:
 	FReply HandleRecompileShaders();
 	FReply HandleCaptureBookmarkOne();
+	void HandleShaderCompileStartActionChanged(TSharedPtr<FString> InSelectedItem, ESelectInfo::Type SelectInfo);
 	FReply HandleOpenOutputFolder();
 	FText GetRecentShaderCompileText() const;
 	void SetStatus(const FText& InStatus);
 
 	FTooncodex573EditorModule* OwnerModule = nullptr;
+	TArray<TSharedPtr<FString>> ShaderCompileStartActionOptions;
+	TSharedPtr<FString> SelectedShaderCompileStartAction;
 	TSharedPtr<STextBlock> StatusTextBlock;
 	FString OutputDirectory;
 };
@@ -585,53 +592,83 @@ private:
 		bAwaitingShaderRecompileCompletion = false;
 		bObservedActiveShaderCompile = false;
 		ShaderRecompileStartSeconds = 0.0;
-		DeleteRingTimerInfoFile();
+		DeleteShaderCompileStartActionInfoFile();
 		InvalidateControlPanel();
 	}
 
-	void LaunchRingTimerForLastShaderCompile()
+	bool LaunchRingTimerForLastShaderCompile()
 	{
 		const FString RingTimerExePath = ResolveRingTimerExecutablePath();
 		if (RingTimerExePath.IsEmpty())
 		{
-			return;
+			return false;
 		}
 
 		if (LastShaderRecompileDurationSeconds < 1.0)
 		{
-			return;
+			return false;
 		}
 
 		const int64 LastDurationMilliseconds = FMath::Max<int64>(0, FMath::RoundToInt64(LastShaderRecompileDurationSeconds * 1000.0));
-		ActiveRingTimerInfoPath = FPaths::Combine(FPaths::GetPath(RingTimerExePath), TEXT("timerinfo.txt"));
-		if (!FFileHelper::SaveStringToFile(FString::Printf(TEXT("%lld"), LastDurationMilliseconds), *ActiveRingTimerInfoPath))
+		return LaunchShaderCompileStartActionProcess(RingTimerExePath, TEXT("CircularRingTimer"), LastDurationMilliseconds);
+	}
+
+	bool LaunchShaderCompileHistory()
+	{
+		const FString ShaderCompileHistoryExePath = ResolveShaderCompileHistoryExecutablePath();
+		if (ShaderCompileHistoryExePath.IsEmpty())
 		{
-			UE_LOG(LogTooncodex573Editor, Warning, TEXT("Failed to write ring timer info file '%s'."), *ActiveRingTimerInfoPath);
-			ActiveRingTimerInfoPath.Reset();
-			return;
+			return false;
 		}
 
-		FProcHandle ProcHandle = FPlatformProcess::CreateProc(*RingTimerExePath, TEXT(""), true, false, false, nullptr, 0, nullptr, nullptr);
+		const int64 LastDurationMilliseconds =
+			(LastShaderRecompileDurationSeconds > 0.0)
+			? FMath::Max<int64>(0, FMath::RoundToInt64(LastShaderRecompileDurationSeconds * 1000.0))
+			: 0;
+		return LaunchShaderCompileStartActionProcess(ShaderCompileHistoryExePath, TEXT("ShaderCompileHistory"), LastDurationMilliseconds);
+	}
+
+	bool LaunchShaderCompileStartActionProcess(const FString& ExecutablePath, const TCHAR* ProcessName, const int64 InitialDurationMilliseconds)
+	{
+		DeleteShaderCompileStartActionInfoFile();
+
+		ActiveShaderCompileStartActionInfoPath = FPaths::Combine(FPaths::GetPath(ExecutablePath), TEXT("timerinfo.txt"));
+		if (!FFileHelper::SaveStringToFile(FString::Printf(TEXT("%lld"), InitialDurationMilliseconds), *ActiveShaderCompileStartActionInfoPath))
+		{
+			UE_LOG(LogTooncodex573Editor, Warning, TEXT("Failed to write shader compile action info file '%s'."), *ActiveShaderCompileStartActionInfoPath);
+			ActiveShaderCompileStartActionInfoPath.Reset();
+			return false;
+		}
+
+		FProcHandle ProcHandle = FPlatformProcess::CreateProc(*ExecutablePath, TEXT(""), true, false, false, nullptr, 0, nullptr, nullptr);
 		if (!ProcHandle.IsValid())
 		{
-			DeleteRingTimerInfoFile();
-			UE_LOG(LogTooncodex573Editor, Warning, TEXT("Failed to launch CircularRingTimer from '%s'."), *RingTimerExePath);
-			return;
+			DeleteShaderCompileStartActionInfoFile();
+			UE_LOG(LogTooncodex573Editor, Warning, TEXT("Failed to launch %s from '%s'."), ProcessName, *ExecutablePath);
+			return false;
 		}
 
-		UE_LOG(LogTooncodex573Editor, Display, TEXT("Launched CircularRingTimer with info file '%s' (%lldms) from '%s'."), *ActiveRingTimerInfoPath, LastDurationMilliseconds, *RingTimerExePath);
+		UE_LOG(
+			LogTooncodex573Editor,
+			Display,
+			TEXT("Launched %s with info file '%s' (%lldms) from '%s'."),
+			ProcessName,
+			*ActiveShaderCompileStartActionInfoPath,
+			InitialDurationMilliseconds,
+			*ExecutablePath);
+		return true;
 	}
 
 	FText GetRecentShaderCompileText() const
 	{
 		if (bAwaitingShaderRecompileCompletion)
 		{
-			return LOCTEXT("ToonCaptureRecentShaderCompileRunning", "최근 소요시간: 측정 중...");
+			return LOCTEXT("ToonCaptureRecentShaderCompileRunning", "Last Elapsed Time: Measuring...");
 		}
 
 		if (LastShaderRecompileDurationSeconds < 0.0)
 		{
-			return LOCTEXT("ToonCaptureRecentShaderCompileNone", "최근 소요시간: 없음");
+			return LOCTEXT("ToonCaptureRecentShaderCompileNone", "Last Elapsed Time: None");
 		}
 
 		FNumberFormattingOptions SecondsFormat;
@@ -643,13 +680,13 @@ private:
 			const int32 WholeMinutes = FMath::FloorToInt(LastShaderRecompileDurationSeconds / 60.0);
 			const double RemainingSeconds = LastShaderRecompileDurationSeconds - (static_cast<double>(WholeMinutes) * 60.0);
 			return FText::Format(
-				LOCTEXT("ToonCaptureRecentShaderCompileMinutes", "최근 소요시간: {0}분 {1}초"),
+				LOCTEXT("ToonCaptureRecentShaderCompileMinutes", "Last Elapsed Time: {0}m {1}s"),
 				FText::AsNumber(WholeMinutes),
 				FText::AsNumber(RemainingSeconds, &SecondsFormat));
 		}
 
 		return FText::Format(
-			LOCTEXT("ToonCaptureRecentShaderCompileSeconds", "최근 소요시간: {0}초"),
+			LOCTEXT("ToonCaptureRecentShaderCompileSeconds", "Last Elapsed Time: {0}s"),
 			FText::AsNumber(LastShaderRecompileDurationSeconds, &SecondsFormat));
 	}
 
@@ -678,7 +715,7 @@ private:
 		bAwaitingShaderRecompileCompletion = false;
 		bObservedActiveShaderCompile = false;
 		ShaderRecompileStartSeconds = 0.0;
-		DeleteRingTimerInfoFile();
+		DeleteShaderCompileStartActionInfoFile();
 		InvalidateControlPanel();
 	}
 
@@ -690,15 +727,15 @@ private:
 		}
 	}
 
-	void DeleteRingTimerInfoFile()
+	void DeleteShaderCompileStartActionInfoFile()
 	{
-		if (ActiveRingTimerInfoPath.IsEmpty())
+		if (ActiveShaderCompileStartActionInfoPath.IsEmpty())
 		{
 			return;
 		}
 
-		IFileManager::Get().Delete(*ActiveRingTimerInfoPath, false, true, true);
-		ActiveRingTimerInfoPath.Reset();
+		IFileManager::Get().Delete(*ActiveShaderCompileStartActionInfoPath, false, true, true);
+		ActiveShaderCompileStartActionInfoPath.Reset();
 	}
 
 	FString ResolveRingTimerExecutablePath() const
@@ -709,6 +746,27 @@ private:
 			FPaths::Combine(ParentDirectory, TEXT("CircularRingTimer"), TEXT("bin"), TEXT("Release"), TEXT("net10.0-windows"), TEXT("win-x64"), TEXT("publish"), TEXT("CircularRingTimer.exe")),
 			FPaths::Combine(ParentDirectory, TEXT("CircularRingTimer"), TEXT("bin"), TEXT("Release"), TEXT("net10.0-windows"), TEXT("win-x64"), TEXT("CircularRingTimer.exe")),
 			FPaths::Combine(ParentDirectory, TEXT("CircularRingTimer"), TEXT("bin"), TEXT("Debug"), TEXT("net10.0-windows"), TEXT("CircularRingTimer.exe"))
+		};
+
+		for (const FString& CandidatePath : CandidatePaths)
+		{
+			if (IFileManager::Get().FileExists(*CandidatePath))
+			{
+				return CandidatePath;
+			}
+		}
+
+		return FString();
+	}
+
+	FString ResolveShaderCompileHistoryExecutablePath() const
+	{
+		const FString ParentDirectory = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("..")));
+		const TArray<FString> CandidatePaths =
+		{
+			FPaths::Combine(ParentDirectory, TEXT("ShaderCompileHistory"), TEXT("publish"), TEXT("release"), TEXT("ShaderCompileHistory.exe")),
+			FPaths::Combine(ParentDirectory, TEXT("ShaderCompileHistory"), TEXT("bin"), TEXT("Release"), TEXT("net10.0-windows"), TEXT("ShaderCompileHistory.exe")),
+			FPaths::Combine(ParentDirectory, TEXT("ShaderCompileHistory"), TEXT("bin"), TEXT("Debug"), TEXT("net10.0-windows"), TEXT("ShaderCompileHistory.exe"))
 		};
 
 		for (const FString& CandidatePath : CandidatePaths)
@@ -781,13 +839,18 @@ private:
 	bool bObservedActiveShaderCompile = false;
 	double ShaderRecompileStartSeconds = 0.0;
 	double LastShaderRecompileDurationSeconds = -1.0;
-	FString ActiveRingTimerInfoPath;
+	FString ActiveShaderCompileStartActionInfoPath;
 };
 
 void SToonViewportControlPanel::Construct(const FArguments& InArgs)
 {
 	OwnerModule = InArgs._OwnerModule;
 	OutputDirectory = ToonViewportCaptureBridge::ResolveDefaultOutputDirectory();
+	ShaderCompileStartActionOptions.Reset();
+	ShaderCompileStartActionOptions.Add(MakeShared<FString>(ToonViewportCaptureBridge::ShaderCompileStartActionTimer));
+	ShaderCompileStartActionOptions.Add(MakeShared<FString>(ToonViewportCaptureBridge::ShaderCompileStartActionCompileTimeHistory));
+	ShaderCompileStartActionOptions.Add(MakeShared<FString>(ToonViewportCaptureBridge::ShaderCompileStartActionDoNothing));
+	SelectedShaderCompileStartAction = ShaderCompileStartActionOptions[1];
 
 	ChildSlot
 	[
@@ -875,6 +938,28 @@ void SToonViewportControlPanel::Construct(const FArguments& InArgs)
 			.AutoHeight()
 			.Padding(0.0f, 12.0f, 0.0f, 0.0f)
 			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("ToonCaptureShaderCompileStartActionLabel", "On Shader Compile Start"))
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				.Padding(10.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(STextComboBox)
+					.OptionsSource(&ShaderCompileStartActionOptions)
+					.InitiallySelectedItem(SelectedShaderCompileStartAction)
+					.OnSelectionChanged(this, &SToonViewportControlPanel::HandleShaderCompileStartActionChanged)
+				]
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 12.0f, 0.0f, 0.0f)
+			[
 				SAssignNew(StatusTextBlock, STextBlock)
 				.AutoWrapText(true)
 				.Text(LOCTEXT("ToonCaptureStatusIdle", "Ready."))
@@ -891,6 +976,14 @@ void SToonViewportControlPanel::Construct(const FArguments& InArgs)
 	];
 }
 
+void SToonViewportControlPanel::HandleShaderCompileStartActionChanged(TSharedPtr<FString> InSelectedItem, ESelectInfo::Type SelectInfo)
+{
+	if (InSelectedItem.IsValid())
+	{
+		SelectedShaderCompileStartAction = InSelectedItem;
+	}
+}
+
 FReply SToonViewportControlPanel::HandleRecompileShaders()
 {
 	UWorld* World = nullptr;
@@ -901,7 +994,20 @@ FReply SToonViewportControlPanel::HandleRecompileShaders()
 
 	if (OwnerModule != nullptr)
 	{
-		OwnerModule->LaunchRingTimerForLastShaderCompile();
+		const bool bUseTimerAction =
+			SelectedShaderCompileStartAction.IsValid() &&
+			SelectedShaderCompileStartAction->Equals(ToonViewportCaptureBridge::ShaderCompileStartActionTimer);
+		const bool bUseCompileTimeHistoryAction =
+			SelectedShaderCompileStartAction.IsValid() &&
+			SelectedShaderCompileStartAction->Equals(ToonViewportCaptureBridge::ShaderCompileStartActionCompileTimeHistory);
+		if (bUseTimerAction)
+		{
+			OwnerModule->LaunchRingTimerForLastShaderCompile();
+		}
+		else if (bUseCompileTimeHistoryAction)
+		{
+			OwnerModule->LaunchShaderCompileHistory();
+		}
 		OwnerModule->BeginShaderRecompileTiming();
 	}
 
@@ -965,7 +1071,7 @@ FText SToonViewportControlPanel::GetRecentShaderCompileText() const
 		return OwnerModule->GetRecentShaderCompileText();
 	}
 
-	return LOCTEXT("ToonCaptureRecentShaderCompileUnavailable", "최근 소요시간: 없음");
+	return LOCTEXT("ToonCaptureRecentShaderCompileUnavailable", "Last Elapsed Time: None");
 }
 
 void SToonViewportControlPanel::SetStatus(const FText& InStatus)
