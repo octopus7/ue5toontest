@@ -16,10 +16,8 @@ public class tooncodex573Editor : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			"AssetRegistry",
 			"Json",
 			"LevelEditor",
-			"MaterialEditor",
 			"Networking",
 			"RenderCore",
 			"Slate",
