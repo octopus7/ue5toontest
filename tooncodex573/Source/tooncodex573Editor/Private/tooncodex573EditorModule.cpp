@@ -156,13 +156,17 @@ public:
 
 private:
 	FReply HandleRecompileShaders();
-	FReply HandleCaptureBookmarkOne();
+	FReply HandleCaptureSelectedBookmark();
+	void HandleBookmarkSelectionChanged(TSharedPtr<FString> InSelectedItem, ESelectInfo::Type SelectInfo);
 	void HandleShaderCompileStartActionChanged(TSharedPtr<FString> InSelectedItem, ESelectInfo::Type SelectInfo);
 	FReply HandleOpenOutputFolder();
 	FText GetRecentShaderCompileText() const;
 	void SetStatus(const FText& InStatus);
+	int32 GetSelectedBookmarkIndex() const;
 
 	FTooncodex573EditorModule* OwnerModule = nullptr;
+	TArray<TSharedPtr<FString>> BookmarkOptions;
+	TSharedPtr<FString> SelectedBookmarkOption;
 	TArray<TSharedPtr<FString>> ShaderCompileStartActionOptions;
 	TSharedPtr<FString> SelectedShaderCompileStartAction;
 	TSharedPtr<STextBlock> StatusTextBlock;
@@ -433,7 +437,7 @@ private:
 		return ToonViewportCaptureBridge::BuildSimpleResponse(false, FString::Printf(TEXT("unsupported command '%s'"), *Command));
 	}
 
-	bool RunBookmarkOneCapture(FString& OutResolvedPath, FString& OutError) const
+	bool RunBookmarkCapture(const int32 BookmarkIndex, FString& OutResolvedPath, FString& OutError) const
 	{
 		int32 CaptureResX = 0;
 		int32 CaptureResY = 0;
@@ -441,7 +445,7 @@ private:
 			FString(),
 			ToonViewportCaptureBridge::DefaultResX,
 			ToonViewportCaptureBridge::DefaultResY,
-			ToonViewportCaptureBridge::DefaultBookmarkIndex,
+			BookmarkIndex,
 			OutResolvedPath,
 			CaptureResX,
 			CaptureResY,
@@ -483,7 +487,7 @@ private:
 
 		OutCaptureResX = bHasExplicitResolution ? RequestedResX : ToonViewportCaptureBridge::DefaultResX;
 		OutCaptureResY = bHasExplicitResolution ? RequestedResY : ToonViewportCaptureBridge::DefaultResY;
-		OutResolvedPath = ResolveOutputPath(RequestedPath);
+		OutResolvedPath = ResolveOutputPath(RequestedPath, BookmarkIndex);
 
 		const FString OutputDirectory = FPaths::GetPath(OutResolvedPath);
 		if (!OutputDirectory.IsEmpty() && !IFileManager::Get().MakeDirectory(*OutputDirectory, true))
@@ -780,15 +784,16 @@ private:
 		return FString();
 	}
 
-	FString ResolveOutputPath(const FString& RequestedPath) const
+	FString ResolveOutputPath(const FString& RequestedPath, const int32 BookmarkIndex) const
 	{
 		FString OutputPath = RequestedPath;
 		if (OutputPath.IsEmpty())
 		{
-			OutputPath = FPaths::Combine(
-				ToonViewportCaptureBridge::ResolveDefaultOutputDirectory(),
-				FString::Printf(TEXT("Bookmark1Capture_%s.png"), *FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S")))
-			);
+			const FString Timestamp = FDateTime::Now().ToString(TEXT("%Y%m%d_%H%M%S"));
+			const FString DefaultFileName = (BookmarkIndex != INDEX_NONE)
+				? FString::Printf(TEXT("Bookmark%dCapture_%s.png"), BookmarkIndex, *Timestamp)
+				: FString::Printf(TEXT("ViewportCapture_%s.png"), *Timestamp);
+			OutputPath = FPaths::Combine(ToonViewportCaptureBridge::ResolveDefaultOutputDirectory(), DefaultFileName);
 		}
 		else
 		{
@@ -846,6 +851,22 @@ void SToonViewportControlPanel::Construct(const FArguments& InArgs)
 {
 	OwnerModule = InArgs._OwnerModule;
 	OutputDirectory = ToonViewportCaptureBridge::ResolveDefaultOutputDirectory();
+	BookmarkOptions.Reset();
+	BookmarkOptions.Reserve(static_cast<int32>(AWorldSettings::NumMappedBookmarks));
+	for (int32 BookmarkIndex = 0; BookmarkIndex < static_cast<int32>(AWorldSettings::NumMappedBookmarks); ++BookmarkIndex)
+	{
+		BookmarkOptions.Add(MakeShared<FString>(FString::FromInt(BookmarkIndex)));
+	}
+
+	if (BookmarkOptions.IsValidIndex(ToonViewportCaptureBridge::DefaultBookmarkIndex))
+	{
+		SelectedBookmarkOption = BookmarkOptions[ToonViewportCaptureBridge::DefaultBookmarkIndex];
+	}
+	else if (BookmarkOptions.Num() > 0)
+	{
+		SelectedBookmarkOption = BookmarkOptions[0];
+	}
+
 	ShaderCompileStartActionOptions.Reset();
 	ShaderCompileStartActionOptions.Add(MakeShared<FString>(ToonViewportCaptureBridge::ShaderCompileStartActionTimer));
 	ShaderCompileStartActionOptions.Add(MakeShared<FString>(ToonViewportCaptureBridge::ShaderCompileStartActionCompileTimeHistory));
@@ -862,7 +883,7 @@ void SToonViewportControlPanel::Construct(const FArguments& InArgs)
 			.AutoHeight()
 			[
 				SNew(STextBlock)
-				.Text(LOCTEXT("ToonCaptureHeader", "Bookmark 1 Capture"))
+				.Text(LOCTEXT("ToonCaptureHeader", "Shader Development Helper"))
 				.Font(FAppStyle::GetFontStyle(TEXT("HeadingMedium")))
 			]
 			+ SVerticalBox::Slot()
@@ -871,58 +892,20 @@ void SToonViewportControlPanel::Construct(const FArguments& InArgs)
 			[
 				SNew(STextBlock)
 				.AutoWrapText(true)
-				.Text(LOCTEXT("ToonCaptureDescription", "Moves the active viewport to bookmark 1, then saves a 512x512 PNG with an offscreen scene capture."))
+				.Text(LOCTEXT("ToonCaptureDescription", "Moves the active viewport to the selected bookmark, then saves a 512x512 PNG with an offscreen scene capture."))
 			]
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			.Padding(0.0f, 12.0f, 0.0f, 0.0f)
 			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
+				SNew(SBox)
+				.HeightOverride(36.0f)
 				[
-					SNew(SBox)
-					.HeightOverride(36.0f)
-					.MinDesiredWidth(130.0f)
+					SNew(SButton)
+					.OnClicked(this, &SToonViewportControlPanel::HandleRecompileShaders)
 					[
-						SNew(SButton)
-						.OnClicked(this, &SToonViewportControlPanel::HandleRecompileShaders)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("ToonCaptureRecompileShadersButton", "Recompile Shaders"))
-						]
-					]
-				]
-				+ SHorizontalBox::Slot()
-				.FillWidth(1.0f)
-				.Padding(8.0f, 0.0f, 0.0f, 0.0f)
-				[
-					SNew(SBox)
-					.HeightOverride(36.0f)
-					[
-						SNew(SButton)
-						.ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("PrimaryButton"))
-						.OnClicked(this, &SToonViewportControlPanel::HandleCaptureBookmarkOne)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("ToonCaptureButton", "Camera 1 -> Capture 512x512"))
-						]
-					]
-				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(8.0f, 0.0f, 0.0f, 0.0f)
-				[
-					SNew(SBox)
-					.HeightOverride(36.0f)
-					.MinDesiredWidth(110.0f)
-					[
-						SNew(SButton)
-						.OnClicked(this, &SToonViewportControlPanel::HandleOpenOutputFolder)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("ToonCaptureOpenFolderButton", "Open Folder"))
-						]
+						SNew(STextBlock)
+						.Text(LOCTEXT("ToonCaptureRecompileShadersButton", "Recompile Shaders"))
 					]
 				]
 			]
@@ -960,6 +943,70 @@ void SToonViewportControlPanel::Construct(const FArguments& InArgs)
 			.AutoHeight()
 			.Padding(0.0f, 12.0f, 0.0f, 0.0f)
 			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ToonCaptureBookmarkLabel", "Bookmark"))
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+					[
+						SNew(SBox)
+						.MinDesiredWidth(110.0f)
+						[
+							SNew(STextComboBox)
+							.OptionsSource(&BookmarkOptions)
+							.InitiallySelectedItem(SelectedBookmarkOption)
+							.OnSelectionChanged(this, &SToonViewportControlPanel::HandleBookmarkSelectionChanged)
+						]
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(SBox)
+					.HeightOverride(36.0f)
+					[
+						SNew(SButton)
+						.ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("PrimaryButton"))
+						.OnClicked(this, &SToonViewportControlPanel::HandleCaptureSelectedBookmark)
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("ToonCaptureButton", "Capture 512x512"))
+						]
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(SBox)
+					.HeightOverride(36.0f)
+					.MinDesiredWidth(110.0f)
+					[
+						SNew(SButton)
+						.OnClicked(this, &SToonViewportControlPanel::HandleOpenOutputFolder)
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("ToonCaptureOpenFolderButton", "Open Folder"))
+						]
+					]
+				]
+			]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.0f, 12.0f, 0.0f, 0.0f)
+			[
 				SAssignNew(StatusTextBlock, STextBlock)
 				.AutoWrapText(true)
 				.Text(LOCTEXT("ToonCaptureStatusIdle", "Ready."))
@@ -974,6 +1021,14 @@ void SToonViewportControlPanel::Construct(const FArguments& InArgs)
 			]
 		]
 	];
+}
+
+void SToonViewportControlPanel::HandleBookmarkSelectionChanged(TSharedPtr<FString> InSelectedItem, ESelectInfo::Type SelectInfo)
+{
+	if (InSelectedItem.IsValid())
+	{
+		SelectedBookmarkOption = InSelectedItem;
+	}
 }
 
 void SToonViewportControlPanel::HandleShaderCompileStartActionChanged(TSharedPtr<FString> InSelectedItem, ESelectInfo::Type SelectInfo)
@@ -1037,7 +1092,7 @@ FReply SToonViewportControlPanel::HandleRecompileShaders()
 	return FReply::Handled();
 }
 
-FReply SToonViewportControlPanel::HandleCaptureBookmarkOne()
+FReply SToonViewportControlPanel::HandleCaptureSelectedBookmark()
 {
 	if (OwnerModule == nullptr)
 	{
@@ -1047,7 +1102,7 @@ FReply SToonViewportControlPanel::HandleCaptureBookmarkOne()
 
 	FString OutputPath;
 	FString ErrorMessage;
-	if (!OwnerModule->RunBookmarkOneCapture(OutputPath, ErrorMessage))
+	if (!OwnerModule->RunBookmarkCapture(GetSelectedBookmarkIndex(), OutputPath, ErrorMessage))
 	{
 		SetStatus(FText::FromString(ErrorMessage));
 		return FReply::Handled();
@@ -1080,6 +1135,22 @@ void SToonViewportControlPanel::SetStatus(const FText& InStatus)
 	{
 		StatusTextBlock->SetText(InStatus);
 	}
+}
+
+int32 SToonViewportControlPanel::GetSelectedBookmarkIndex() const
+{
+	if (!SelectedBookmarkOption.IsValid())
+	{
+		return ToonViewportCaptureBridge::DefaultBookmarkIndex;
+	}
+
+	const int32 BookmarkIndex = FCString::Atoi(**SelectedBookmarkOption);
+	if ((BookmarkIndex < 0) || (BookmarkIndex >= static_cast<int32>(AWorldSettings::NumMappedBookmarks)))
+	{
+		return ToonViewportCaptureBridge::DefaultBookmarkIndex;
+	}
+
+	return BookmarkIndex;
 }
 
 IMPLEMENT_MODULE(FTooncodex573EditorModule, tooncodex573Editor)
